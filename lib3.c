@@ -110,7 +110,7 @@ static char checkfooter(leaks_info_t *info)
 {
     char ret = 1;
     int i;
-    leaks_footer_t *footer = info->ptr + info->size;
+    leaks_footer_t *footer = (leaks_footer_t *)(info->ptr + info->size);
 
     if (footer != NULL)
     {
@@ -126,12 +126,12 @@ static char checkfooter(leaks_info_t *info)
     if (!ret)
     {
         fprintf(output, "memory overflow on pointer %p, size %lu allowed by %p\n", info->ptr, info->size, info->caller);
-        fprintf(output, "pattern expected 0x%x obtained 0x", FOOTER_PATTERN);
+        fprintf(output, "%p pattern expected 0x%x obtained 0x", footer, FOOTER_PATTERN);
         for (i = 0; i < sizeof(footer->pattern); i++)
         {
-            printf("%02X", footer->pattern[i]);
+            fprintf(output,"%02X", footer->pattern[i]);
         }
-        printf("\n");
+        fprintf(output,"\n");
     }
     return ret;
 }
@@ -142,12 +142,8 @@ static void *pushleak(size_t size, void *caller)
 {
 	int pid;
 	leaks_info_t *info = &leaksinfo;
-    leaks_footer_t *footer;
-#ifdef _PTHREAD
-	pthread_t thread = pthread_self();
-#else
-	int thread = 0;
-#endif
+	leaks_footer_t *footer;
+	size_t length;
 
 	if(!pmalloc)
 	{
@@ -163,23 +159,26 @@ static void *pushleak(size_t size, void *caller)
 	info->next = pmalloc(sizeof(leaks_info_t) + size + sizeof(leaks_footer_t));
 	info = info->next;
     memset(info, 0, sizeof(leaks_info_t) + size + sizeof(leaks_footer_t));
-	info->ptr = info + sizeof(leaks_info_t);
+	info->ptr = (void *)info + sizeof(leaks_info_t);
 	info->size = size;
     memset(info->ptr, 0, info->size);
     footer = info->ptr + info->size;
+	memset(footer, FOOTER_PATTERN, sizeof(footer->pattern));
 
 	info->next = NULL;
 	info->caller = caller;
-	info->thread = thread;
-    {
-        int i;
-        for (i = 0; i < sizeof(footer->pattern); i++)
-            footer->pattern[i] = FOOTER_PATTERN;
-    }
+#ifdef _PTHREAD
+	info->thread = pthread_self();
+#endif
+
     if (iswarning())
     {
         pid = (int)getpid();
+#ifdef _PTHREAD
         fprintf(output, "pushleak %p (size=%lu pid=%d thread=%lu fct(%p))\n", info->ptr, info->size, pid, info->thread, CALLER);
+#else
+        fprintf(output, "pushleak %p (size=%lu pid=%d fct(%p))\n", info->ptr, info->size, pid, CALLER);
+#endif
     }
     return info->ptr;
 }
@@ -189,18 +188,13 @@ static void popleak(void * ptr, void *caller)
 	int pid;
 	leaks_info_t *info = &leaksinfo;
 	leaks_info_t *pop;
-#ifdef _PTHREAD
-	pthread_t thread = pthread_self();
-#else
-	int thread = 0;
-#endif
 
 	if(!pfree)
 	{
 		pfree = (void (*)(void *))dlsym(RTLD_NEXT, "free");
 	}
 
-	while (info->next && info->next->ptr != ptr && info->next->thread != thread)
+	while (info->next && info->next->ptr != ptr)
     {
         info = info->next;
         if (checkfooter_all)
@@ -213,7 +207,11 @@ static void popleak(void * ptr, void *caller)
         if (iswarning())
         {
             pid = (int)getpid();
-            fprintf(output, "popleak %p (size=%lu pid=%d thread=%lu fct(%p))\n", pop->ptr, pop->size, pid, thread, caller);
+#ifdef _PTHREAD
+            fprintf(output, "popleak %p (size=%lu pid=%d thread=%lu/%lu fct(%p))\n", pop->ptr, pop->size, pid, pthread_self(), pop->thread, caller);
+#else
+            fprintf(output, "popleak %p (size=%lu pid=%d fct(%p))\n", pop->ptr, pop->size, pid, caller);
+#endif
         }
         checkfooter(pop);
 		pfree(pop);
@@ -334,8 +332,7 @@ static void _lib_exit()
 
 	unlock();
 }
-
-void * malloc(size_t size)
+void * myd_malloc(size_t size)
 {
 	RETURN_CALLER(caller);
 	void * ret = NULL;
@@ -346,50 +343,56 @@ void * malloc(size_t size)
 	return(ret);
 }
 
+void * myd_calloc(size_t nelem, size_t elsize)
+{
+	RETURN_CALLER(caller);
+	void * ret = NULL;
+
+	lock();
+	ret = pushleak(nelem * elsize, caller);
+	unlock();
+	return(ret);
+}
+
+void * myd_realloc(void *ptr, size_t size)
+{
+	RETURN_CALLER(caller);
+	void * ret = NULL;
+
+	lock();
+	if (ptr)
+		popleak(ptr, caller);
+
+	ret = pushleak(size,caller);
+	unlock();
+	return(ret);
+
+}
+
+void myd_free(void * ptr)
+{
+	RETURN_CALLER(caller);
+	lock();
+	if (ptr)
+		popleak(ptr, caller);
+	unlock();
+}
+
+#ifdef STATIC_LIBRARY
+void myd_init()
+{
+	_lib_init();
+}
+
+void myd_exit()
+{
+	_lib_exit();
+}
+#else
+void * malloc(size_t size) __attribute__ ((weak, alias ("myd_malloc")));
+void * realloc(void *ptr, size_t size) __attribute__ ((weak, alias ("myd_realloc")));
 /* calloc is called by dlsym
-void * calloc(size_t nelem, size_t elsize)
-{
-	void * ret = NULL;
-
-	RETURN_CALLER(caller);
-#ifdef LOCAL
-	void * (*pcalloc)(size_t, size_t) = NULL;
-#endif
-#ifdef THREAD_SAFE
-	if (!pcalloc)
-	{
-		fprintf(output, "dlsym calloc\n");
-		pcalloc = (void * (*)(size_t, size_t))dlsym(RTLD_NEXT, "calloc");
-	}
-#endif
-	lock();
-	if(pcalloc)
-		ret = pcalloc(nelem, elsize);
-	unlock();
-	pushleak(ret, nelem * elsize, caller);
-	return(ret);
-}
+void * calloc(size_t nelem, size_t elsize) __attribute__ ((weak, alias ("myd_calloc")));
 */
-void * realloc(void *ptr, size_t size)
-{
-	RETURN_CALLER(caller);
-	void * ret = NULL;
-
-	lock();
-	if (ptr)
-		popleak(ptr, caller);
-
-    ret = pushleak(size,caller);
-	unlock();
-	return(ret);
-
-}
-
-void free(void * ptr)
-{
-	RETURN_CALLER(caller);
-	lock();
-	if (ptr)
-		popleak(ptr, caller);
-	unlock();
-}
+void free(void * ptr) __attribute__ ((weak, alias ("myd_free")));
+#endif
