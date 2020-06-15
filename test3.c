@@ -22,7 +22,7 @@ int main(int argc, char **argv)
 {
     void *ret[10];
     int i, j;
-    int nbmalloc, nbfree;
+    int nbmalloc = 10, nbfree = 10;
 
     if (argc > 1)
     {
@@ -39,6 +39,7 @@ int main(int argc, char **argv)
     
     for (i = 0; i < nbmalloc; i++)
         ret[i] = function1(i);
+
     for (j = 0; j < nbfree;)
     {
         i = (random() * nbmalloc) / RAND_MAX;
