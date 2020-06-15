@@ -220,6 +220,66 @@ static void popleak(void * ptr, void *caller)
 		fprintf(output, "popleak unknown memory %p\n", ptr);
 }
 
+static void *reallocleak(void * ptr, size_t size, void *caller)
+{
+	int pid;
+	leaks_info_t *info = &leaksinfo;
+	leaks_info_t *pop;
+	leaks_footer_t *footer;
+
+	if(!pfree)
+	{
+		pfree = (void (*)(void *))dlsym(RTLD_NEXT, "free");
+	}
+	if(!pmalloc)
+	{
+		pmalloc = (void * (*)(size_t))dlsym(RTLD_NEXT, "malloc");
+	}
+
+
+	while (info->next && info->next->ptr != ptr)
+	{
+		info = info->next;
+		if (checkfooter_all)
+			checkfooter(info);
+	}
+	if (info->next)
+	{
+		pop = info->next;
+		checkfooter(pop);
+
+		info->next = pmalloc(sizeof(leaks_info_t) + size + sizeof(leaks_footer_t));
+		info = info->next;
+		info->ptr = (void *)info + sizeof(leaks_info_t);
+		info->size = size;
+		size = (size > pop->size)?pop->size:size;
+		memcpy(info->ptr, pop->ptr, size);
+		footer = info->ptr + info->size;
+		memset(footer, FOOTER_PATTERN, sizeof(footer->pattern));
+
+		info->next = pop->next;
+		info->caller = caller;
+#ifdef _PTHREAD
+		info->thread = pthread_self();
+#endif
+
+		if (iswarning())
+		{
+			pid = (int)getpid();
+#ifdef _PTHREAD
+			fprintf(output, "reallocleak %p (size=%lu pid=%d thread=%lu/%lu fct(%p))\n", pop->ptr, pop->size, pid, info->thread, pop->thread, caller);
+#else
+			fprintf(output, "reallocleak %p (size=%lu pid=%d fct(%p))\n", pop->ptr, pop->size, pid, caller);
+#endif
+		}
+		pfree(pop);
+	}
+	else if (iswarning())
+		fprintf(output, "reallocleak unknown memory %p\n", ptr);
+
+    return info->ptr;
+}
+
 static void printleak()
 {
 	leaks_info_t *info = &leaksinfo;
@@ -360,10 +420,7 @@ void * myd_realloc(void *ptr, size_t size)
 	void * ret = NULL;
 
 	lock();
-	if (ptr)
-		popleak(ptr, caller);
-
-	ret = pushleak(size,caller);
+	ret = reallocleak(ptr, size,caller);
 	unlock();
 	return(ret);
 
