@@ -29,48 +29,16 @@ static void _lib_exit() __attribute__((destructor));
 
 static FILE *output;
 
-#ifdef _PTHREAD
-static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
-static pthread_t mutextid=0;
-static int locknr=0;
-
-static void lock()
-{
-
-#if 0
-	if (pthread_mutex_trylock(&mutex))
-	{
-		if ( mutextid==pthread_self() )
-		{
-			++locknr;
-			return;
-		}
-		else
-		{
-			pthread_mutex_lock(&mutex);
-		}
-	}
+#ifdef EXTERNAL_MUTEX
+extern void myd_mutex_init();
+extern void myd_mutex_destroy();
+extern void myd_lock();
+extern void myd_unlock();
 #else
-	pthread_mutex_lock(&mutex);
-#endif
-	mutextid=pthread_self();
-	locknr=1;
+static void mutex_init()
+{
 }
 
-static void unlock()
-{
-#if 0
-	--locknr;
-	if (!locknr)
-	{
-		mutextid=0;
-		pthread_mutex_unlock(&mutex);
-	}
-#else
-	pthread_mutex_unlock(&mutex);
-#endif
-}
-#else
 static void lock()
 {
 }
@@ -143,7 +111,6 @@ static void *pushleak(size_t size, void *caller)
 	int pid;
 	leaks_info_t *info = &leaksinfo;
 	leaks_footer_t *footer;
-	size_t length;
 
 	if(!pmalloc)
 	{
@@ -295,19 +262,17 @@ static void sig_handler(int signal)
 {
 	if (signal == SIGUSR2)
 	{
-		lock();
+		myd_lock();
 		printleak();
-		unlock();
+		myd_unlock();
 	}
 }
 
 static void _lib_init()
 {
 	if (_lib_inited) return;
-#ifdef _PTHREAD
-	pthread_mutex_init(&mutex, NULL);
-#endif
-	lock();
+	myd_mutex_init();
+	myd_lock();
 	output = stderr;
 	fprintf(output, "You use %s\n", __FILE__);
 
@@ -364,7 +329,7 @@ static void _lib_init()
             checkfooter_all = atoi(env);
     }
 	_lib_inited = 1;
-	unlock();
+	myd_unlock();
 }
 
 static void _lib_exit()
@@ -374,7 +339,7 @@ static void _lib_exit()
 
 	fprintf(output, "You close %s\n", __FILE__);
 
-	lock();
+	myd_lock();
 	printleak();
 
 	if(!pfree)
@@ -390,16 +355,17 @@ static void _lib_exit()
 		pfree(previous);
 	}
 
-	unlock();
+	myd_unlock();
+	myd_mutex_destroy();
 }
 void * myd_malloc(size_t size)
 {
 	RETURN_CALLER(caller);
 	void * ret = NULL;
 
-	lock();
+	myd_lock();
 	ret = pushleak(size, caller);
-	unlock();
+	myd_unlock();
 	return(ret);
 }
 
@@ -408,9 +374,9 @@ void * myd_calloc(size_t nelem, size_t elsize)
 	RETURN_CALLER(caller);
 	void * ret = NULL;
 
-	lock();
+	myd_lock();
 	ret = pushleak(nelem * elsize, caller);
-	unlock();
+	myd_unlock();
 	return(ret);
 }
 
@@ -419,9 +385,9 @@ void * myd_realloc(void *ptr, size_t size)
 	RETURN_CALLER(caller);
 	void * ret = NULL;
 
-	lock();
+	myd_lock();
 	ret = reallocleak(ptr, size,caller);
-	unlock();
+	myd_unlock();
 	return(ret);
 
 }
@@ -429,10 +395,10 @@ void * myd_realloc(void *ptr, size_t size)
 void myd_free(void * ptr)
 {
 	RETURN_CALLER(caller);
-	lock();
+	myd_lock();
 	if (ptr)
 		popleak(ptr, caller);
-	unlock();
+	myd_unlock();
 }
 
 #ifdef STATIC_LIBRARY

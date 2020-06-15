@@ -20,9 +20,16 @@ endif
 
 OBJECTS=lib3.o
 
+ifeq ($(EXTERNAL_MUTEX),y)
+CFLAGS+=-DEXTERNAL_MUTEX
+endif
+
 ifneq ($(NOTHREAD),y)
 LDFLAGS+=-pthread
-CFLAGS+=-pthread -D_PTHREAD -DTHREAD_SAFE
+CFLAGS+=-pthread -D_PTHREAD -DTHREAD_SAFE -DEXTERNAL_MUTEX
+ifneq ($(EXTERNAL_MUTEX),y)
+OBJECTS+=pthread_mutex.o
+endif
 endif
 
 #$(NAME)_CCFLAGS= -DLEAKS -DARM -DHISTORY -DTHREAD_SAFE -D_PTHREAD
